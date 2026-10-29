@@ -166,19 +166,14 @@ jobs:
               out += [f"Copper layers of `{path}` in stack order, without silkscreen. Plotted by "
                       f"[kicad-board-plots](https://github.com/johonkanen/kicad-board-plots) on each board change; "
                       f"the images live on the `{branch}` branch.", ""]
-              cells = [(caption(n, k, nets.get(n, [])),
-                        f'<img src="https://raw.githubusercontent.com/{repo}/{branch}/{stem}/{n.replace(".", "_")}.svg" width="{width}">')
+              # HTML table, two plots per row, each caption under its own plot.
+              cells = [f'<td align="center"><img src="https://raw.githubusercontent.com/{repo}/{branch}/{stem}/'
+                       f'{n.replace(".", "_")}.svg" width="{width}"><br><b>{caption(n, k, nets.get(n, []))}</b></td>'
                        for n, k in layers]
-              if len(cells) % 2:
-                  cells.append(("", ""))
+              out.append("<table>")
               for i in range(0, len(cells), 2):
-                  (c1, i1), (c2, i2) = cells[i], cells[i + 1]
-                  if i == 0:
-                      out += [f"| {c1} | {c2} |", "|:---:|:---:|"]
-                  else:
-                      out.append(f"| **{c1}** | **{c2}** |" if c2 else f"| **{c1}** | |")
-                  out.append(f"| {i1} | {i2} |")
-              out.append("")
+                  out += ["<tr>"] + cells[i:i + 2] + ["</tr>"]
+              out += ["</table>", ""]
           out.append(end)
           block = "\n".join(out)
 
