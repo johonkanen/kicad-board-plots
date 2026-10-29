@@ -39,7 +39,7 @@ jobs:
       image: kicad/kicad:${{ inputs.kicad-version }}
       options: --user root
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Plot copper layers
         shell: bash   # container steps default to sh (dash)
@@ -74,7 +74,7 @@ jobs:
           fi
           find out -type f | sort
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: board-plots
           path: out
@@ -86,11 +86,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}   # the branch tip, so a README commit can be pushed
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: board-plots
           path: ${{ runner.temp }}/plots
