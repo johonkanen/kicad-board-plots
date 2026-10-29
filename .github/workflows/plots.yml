@@ -1,0 +1,213 @@
+name: KiCad board plots
+
+# Reusable workflow: plots every copper layer of the calling repository's KiCad
+# boards (copper + board outline, no silkscreen) as SVGs, force-pushes them as a
+# single commit to a plots branch (so it only ever holds the latest set), and
+# writes an image table into the README between
+#   <!-- board-plots:start --> and <!-- board-plots:end -->
+# The README is only committed when the table text changes (a layer, plane net or
+# board was added or removed); the images themselves update on the plots branch.
+on:
+  workflow_call:
+    inputs:
+      boards:
+        description: Space-separated board files or bash globs (globstar on)
+        type: string
+        default: '**/*.kicad_pcb'
+      kicad-version:
+        description: Tag of the kicad/kicad Docker image
+        type: string
+        default: '10.0'
+      branch:
+        description: Branch the plots are force-pushed to
+        type: string
+        default: renders
+      readme:
+        description: README to write the image table into ('' to skip)
+        type: string
+        default: README.md
+      image-width:
+        description: Width of each image in the README table, in pixels
+        type: number
+        default: 400
+
+jobs:
+  plot:
+    runs-on: ubuntu-latest
+    # root: the image's default user can't write to the Actions workspace.
+    container:
+      image: kicad/kicad:${{ inputs.kicad-version }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Plot copper layers
+        shell: bash   # container steps default to sh (dash)
+        env:
+          BOARDS: ${{ inputs.boards }}
+        run: |
+          set -eu
+          shopt -s globstar nullglob
+          kicad-cli version
+          mkdir -p out
+          : > out/boards.txt
+          for pcb in $BOARDS; do
+            case "$pcb" in */.git/*|*-backups/*|*/_autosave-*) continue ;; esac
+            stem=$(basename "$pcb" .kicad_pcb)
+            mkdir -p "out/$stem"
+            printf '%s\t%s\n' "$stem" "$pcb" >> out/boards.txt
+            # Every copper layer in the board's layer stack, in stack order.
+            for layer in $(grep -oP '^\t\t\(\d+ "\K[^"]+\.Cu(?=")' "$pcb"); do
+              svg="out/$stem/${layer/./_}.svg"
+              mirror=""
+              [ "$layer" = B.Cu ] && mirror="--mirror"   # bottom as seen from below
+              kicad-cli pcb export svg --mode-single --layers "$layer,Edge.Cuts" \
+                --theme _builtin_default --page-size-mode 2 --exclude-drawing-sheet \
+                $mirror -o "$svg" "$pcb"
+              # KiCad's board background, so the plot reads the same in GitHub's light and dark themes.
+              sed -i -E '0,/<title>/s|(<title>)|<rect x="0" y="0" width="100%" height="100%" fill="#001023"/>\n\1|' "$svg"
+            done
+          done
+          if [ ! -s out/boards.txt ]; then
+            echo "::error::No board files match '$BOARDS'"
+            exit 1
+          fi
+          find out -type f | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: board-plots
+          path: out
+          if-no-files-found: error
+
+  publish:
+    needs: plot
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}   # the branch tip, so a README commit can be pushed
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: board-plots
+          path: ${{ runner.temp }}/plots
+
+      - name: Force-push the plots branch
+        working-directory: ${{ runner.temp }}/plots
+        env:
+          BRANCH: ${{ inputs.branch }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          git init -q -b "$BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Board plots for ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+
+      - name: Write the image table into the README
+        if: inputs.readme != ''
+        env:
+          PLOTS: ${{ runner.temp }}/plots
+          README: ${{ inputs.readme }}
+          BRANCH: ${{ inputs.branch }}
+          WIDTH: ${{ inputs.image-width }}
+        run: |
+          python3 - <<'EOF'
+          import os, re
+
+          plots, readme = os.environ["PLOTS"], os.environ["README"]
+          branch, width, repo = os.environ["BRANCH"], os.environ["WIDTH"], os.environ["GITHUB_REPOSITORY"]
+          start, end = "<!-- board-plots:start -->", "<!-- board-plots:end -->"
+
+          def copper_layers(text):
+              """(name, type) of each copper layer, in stack order."""
+              block = re.search(r"\n\t\(layers\n(.*?)\n\t\)", text, re.S).group(1)
+              return re.findall(r'^\t\t\(\d+ "([^"]+\.Cu)" (\w+)', block, re.M)
+
+          def zone_nets(text, copper):
+              """Copper layer -> net names of the zones on it (keepouts skipped)."""
+              nets = {}
+              for zone in re.split(r"\n\t\(zone\b", text)[1:]:
+                  head = zone[:3000]   # net and layers come before the outline points
+                  if "(keepout" in head:
+                      continue
+                  net = re.search(r'\(net_name "([^"]*)"\)', head) or re.search(r'\(net "([^"]*)"\)', head)
+                  layers = re.search(r'\(layers? ((?:"[^"]+"\s*)+)\)', head)
+                  if not (net and net.group(1) and layers):
+                      continue
+                  for layer in re.findall(r'"([^"]+)"', layers.group(1)):
+                      for name in {"*.Cu": copper, "F&B.Cu": ["F.Cu", "B.Cu"]}.get(layer, [layer]):
+                          if net.group(1) not in nets.setdefault(name, []):
+                              nets[name].append(net.group(1))
+              return nets
+
+          def caption(name, kind, nets):
+              side = {"F.Cu": " (top)", "B.Cu": " (bottom, mirrored)"}.get(name, "")
+              if kind == "power":
+                  what = f"{', '.join(nets)} plane{'s' if len(nets) > 1 else ''}" if nets else "plane"
+              else:
+                  what = kind + (f", {', '.join(nets)} pour" if nets else "")
+              return f"{name}: {what}{side}"
+
+          boards = [line.split("\t") for line in open(f"{plots}/boards.txt").read().splitlines() if line]
+          out = [start, "<!-- Generated by kicad-board-plots; edits between these markers are overwritten. -->", ""]
+          for stem, path in boards:
+              text = open(path, encoding="utf-8").read()
+              layers = copper_layers(text)
+              names = [n for n, _ in layers]
+              nets = zone_nets(text, names)
+              if len(boards) > 1:
+                  out += [f"### {stem}", ""]
+              out += [f"Copper layers of `{path}` in stack order, without silkscreen. Plotted by "
+                      f"[kicad-board-plots](https://github.com/johonkanen/kicad-board-plots) on each board change; "
+                      f"the images live on the `{branch}` branch.", ""]
+              cells = [(caption(n, k, nets.get(n, [])),
+                        f'<img src="https://raw.githubusercontent.com/{repo}/{branch}/{stem}/{n.replace(".", "_")}.svg" width="{width}">')
+                       for n, k in layers]
+              if len(cells) % 2:
+                  cells.append(("", ""))
+              for i in range(0, len(cells), 2):
+                  (c1, i1), (c2, i2) = cells[i], cells[i + 1]
+                  if i == 0:
+                      out += [f"| {c1} | {c2} |", "|:---:|:---:|"]
+                  else:
+                      out.append(f"| **{c1}** | **{c2}** |" if c2 else f"| **{c1}** | |")
+                  out.append(f"| {i1} | {i2} |")
+              out.append("")
+          out.append(end)
+          block = "\n".join(out)
+
+          old = open(readme, encoding="utf-8").read() if os.path.exists(readme) else f"# {repo.split('/')[1]}\n"
+          if start in old and end in old:
+              new = old[:old.index(start)] + block + old[old.index(end) + len(end):]
+          else:
+              new = old.rstrip("\n") + "\n\n## Board\n\n" + block + "\n"
+          if new != old:
+              open(readme, "w", encoding="utf-8").write(new)
+              print(f"{readme} updated")
+          else:
+              print(f"{readme} already up to date")
+          EOF
+
+      - name: Commit the README
+        if: inputs.readme != ''
+        env:
+          README: ${{ inputs.readme }}
+        run: |
+          set -eu
+          git add -- "$README"
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Pushes made with the workflow token don't start new workflow runs, so this can't loop.
+          git commit -q -m "README: update board plot table"
+          for attempt in 1 2 3; do
+            git push -q && exit 0
+            git pull -q --rebase
+          done
+          exit 1
