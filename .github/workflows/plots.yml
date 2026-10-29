@@ -148,10 +148,14 @@ jobs:
 
           def caption(name, kind, nets):
               side = {"F.Cu": " (top)", "B.Cu": " (bottom, mirrored)"}.get(name, "")
+              # Net names without their sheet path (/Power/SW_3V3 -> SW_3V3); at most five listed.
+              short = list(dict.fromkeys(n.rsplit("/", 1)[-1] for n in nets))
+              listed = ", ".join(short[:5]) + (f" and {len(short) - 5} more" if len(short) > 5 else "")
+              s = "s" if len(short) > 1 else ""
               if kind == "power":
-                  what = f"{', '.join(nets)} plane{'s' if len(nets) > 1 else ''}" if nets else "plane"
+                  what = f"{listed} plane{s}" if short else "plane"
               else:
-                  what = kind + (f", {', '.join(nets)} pour" if nets else "")
+                  what = {"mixed": "signal + plane"}.get(kind, kind) + (f", {listed} pour{s}" if short else "")
               return f"{name}: {what}{side}"
 
           boards = [line.split("\t") for line in open(f"{plots}/boards.txt").read().splitlines() if line]
