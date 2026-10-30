@@ -59,11 +59,9 @@ jobs:
             # Every copper layer in the board's layer stack, in stack order.
             for layer in $(grep -oP '^\t\t\(\d+ "\K[^"]+\.Cu(?=")' "$pcb"); do
               svg="out/$stem/${layer/./_}.svg"
-              mirror=""
-              [ "$layer" = B.Cu ] && mirror="--mirror"   # bottom as seen from below
               kicad-cli pcb export svg --mode-single --layers "$layer,Edge.Cuts" \
                 --theme _builtin_default --page-size-mode 2 --exclude-drawing-sheet \
-                $mirror -o "$svg" "$pcb"
+                -o "$svg" "$pcb"   # every layer seen from the top, B.Cu too (not mirrored)
               # KiCad's board background, so the plot reads the same in GitHub's light and dark themes.
               sed -i -E '0,/<title>/s|(<title>)|<rect x="0" y="0" width="100%" height="100%" fill="#001023"/>\n\1|' "$svg"
             done
@@ -147,7 +145,7 @@ jobs:
               return nets
 
           def caption(name, kind, nets):
-              side = {"F.Cu": " (top)", "B.Cu": " (bottom, mirrored)"}.get(name, "")
+              side = {"F.Cu": " (top)", "B.Cu": " (bottom, seen from the top)"}.get(name, "")
               # Net names without their sheet path (/Power/SW_3V3 -> SW_3V3); at most five listed.
               short = list(dict.fromkeys(n.rsplit("/", 1)[-1] for n in nets))
               listed = ", ".join(short[:5]) + (f" and {len(short) - 5} more" if len(short) > 5 else "")

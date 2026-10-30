@@ -6,8 +6,8 @@ layers are visible too.
 
 On each board change it:
 
-1. Plots each copper layer with `kicad-cli pcb export svg` in the official `kicad/kicad` Docker image. B.Cu is
-   mirrored, as seen from below.
+1. Plots each copper layer with `kicad-cli pcb export svg` in the official `kicad/kicad` Docker image. Every layer,
+   B.Cu too, is seen from the top (not mirrored), so the layers line up with each other.
 2. Force-pushes the SVGs as a single commit to the `renders` branch, which only ever holds the latest set. The plots
    never enter the main branch's history.
 3. Writes a table of the plots into `README.md` between `<!-- board-plots:start -->` and `<!-- board-plots:end -->`,
