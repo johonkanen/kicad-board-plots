@@ -30,6 +30,10 @@ on:
         description: Width of each image in the README table, in pixels
         type: number
         default: 400
+      render-3d:
+        description: Also render the assembled board in 3D, top and bottom (kicad/kicad:<version>-full image)
+        type: boolean
+        default: false
 
 jobs:
   plot:
@@ -78,8 +82,47 @@ jobs:
           path: out
           if-no-files-found: error
 
+  render:
+    if: inputs.render-3d
+    runs-on: ubuntu-latest
+    # The -full image has KiCad's 3D models (the plain one has none).
+    container:
+      image: kicad/kicad:${{ inputs.kicad-version }}-full
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Render the board in 3D
+        shell: bash
+        env:
+          BOARDS: ${{ inputs.boards }}
+        run: |
+          set -eu
+          shopt -s globstar nullglob
+          mkdir -p out
+          for pcb in $BOARDS; do
+            case "$pcb" in */.git/*|*-backups/*|*/_autosave-*) continue ;; esac
+            stem=$(basename "$pcb" .kicad_pcb)
+            mkdir -p "out/$stem"
+            for side in top bottom; do
+              # Raytraced; an opaque background, as the floor's shadows show through a transparent one.
+              kicad-cli pcb render --side "$side" --quality high --background opaque -w 1600 -h 1400 \
+                -o "out/$stem/3d_$side.png" "$pcb" | grep -v '^Rendering:' || true
+              test -s "out/$stem/3d_$side.png"
+            done
+          done
+          find out -type f | sort
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: board-renders
+          path: out
+          if-no-files-found: error
+
   publish:
-    needs: plot
+    needs: [plot, render]
+    # Runs when render is skipped (render-3d off), not when a job failed.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,7 +133,8 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: board-plots
+          pattern: board-*   # board-plots, and board-renders with render-3d
+          merge-multiple: true
           path: ${{ runner.temp }}/plots
 
       - name: Force-push the plots branch
@@ -165,13 +209,21 @@ jobs:
               nets = zone_nets(text, names)
               if len(boards) > 1:
                   out += [f"### {stem}", ""]
-              out += [f"Copper layers of `{path}` in stack order, without silkscreen. Plotted by "
+              what = (f"3D renders and copper layers of `{path}`, the layers in stack order without silkscreen"
+                      if os.path.exists(f"{plots}/{stem}/3d_top.png")
+                      else f"Copper layers of `{path}` in stack order, without silkscreen")
+              out += [f"{what}. Plotted by "
                       f"[kicad-board-plots](https://github.com/johonkanen/kicad-board-plots) on each board change; "
                       f"the images live on the `{branch}` branch.", ""]
               # HTML table, two plots per row, each caption under its own plot.
               cells = [f'<td align="center"><img src="https://raw.githubusercontent.com/{repo}/{branch}/{stem}/'
                        f'{n.replace(".", "_")}.svg" width="{width}"><br><b>{caption(n, k, nets.get(n, []))}</b></td>'
                        for n, k in layers]
+              # 3D renders (render-3d) first, top and bottom side by side.
+              shots = [(f"3d_{side}.png", f"3D, {side}{' (seen from below)' if side == 'bottom' else ''}")
+                       for side in ("top", "bottom") if os.path.exists(f"{plots}/{stem}/3d_{side}.png")]
+              cells = [f'<td align="center"><img src="https://raw.githubusercontent.com/{repo}/{branch}/{stem}/'
+                       f'{f}" width="{width}"><br><b>{c}</b></td>' for f, c in shots] + cells
               out.append("<table>")
               for i in range(0, len(cells), 2):
                   out += ["<tr>"] + cells[i:i + 2] + ["</tr>"]

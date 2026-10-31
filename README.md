@@ -47,6 +47,12 @@ Pass them under `with:` in the calling job.
 | `branch` | `renders` | branch the plots are pushed to |
 | `readme` | `README.md` | README to write the table into; `''` to skip |
 | `image-width` | `400` | width of each image in the table, in pixels |
+| `render-3d` | `false` | also render the assembled board in 3D, top and bottom (since `v1.1`) |
+
+With `render-3d: true`, a parallel job raytraces the board with `kicad-cli pcb render` in the
+`kicad/kicad:<kicad-version>-full` image, which has KiCad's 3D models (the plain image has none). The two PNGs go
+to the same branch and lead the table. Footprints whose 3D model is missing or outside KiCad's library show as bare
+pads.
 
 Several boards get one table each, under a `### <board>` heading. Boards are told apart by file name, so two boards
 with the same file name in different folders would overwrite each other's plots.
